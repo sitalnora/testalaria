@@ -1,0 +1,10 @@
+/.bundle/
+/vendor/bundle
+/pkg/
+/tmp/
+/coverage/
+*.gem
+Gemfile.lock
+.testalaria.report.yml
+.testalaria.coverage.yml
+.byebug_history

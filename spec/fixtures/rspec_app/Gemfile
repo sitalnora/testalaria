@@ -1,0 +1,7 @@
+# frozen_string_literal: true
+
+source "https://rubygems.org"
+
+gem "rspec", "~> 3.12"
+# The gem itself is required by path when driven under TESTALARIA=1 by the
+# parent test suite; the fixture runs standalone without it.
