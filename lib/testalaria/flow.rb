@@ -63,11 +63,15 @@ module Testalaria
       end
 
       Outcome.new(
-        full_run: selection.full_run, trigger: selection.trigger,
-        selection: selection, suites: suites,
+        full_run: selection.full_run,
+        trigger: selection.trigger,
+        selection: selection,
+        suites: suites,
         examples_run: (selection.example_reasons.keys + collected_example_keys(test_files)).uniq,
-        map_before: map_before, map_after: @store.load,
-        changed_test_files: test_files, changed_source_files: source_files,
+        map_before: map_before,
+        map_after: @store.load,
+        changed_test_files: test_files,
+        changed_source_files: source_files,
         changed_sources: changed_sources,
         executed_lines: CoverageDigestStore.new(path: @coverage_path).load
       )
