@@ -16,7 +16,13 @@ class FakeRunner
   # is reused for every call. Defaults to a clean exit with empty stdout.
   def initialize(scripted: nil)
     @calls = []
-    @scripted = Array(scripted)
+    # A single Result/Hash is wrapped (not Array()-splatted, which would turn a
+    # Hash into [key, value] pairs); an explicit Array is kept as the schedule.
+    @scripted = case scripted
+                when nil then []
+                when Array then scripted
+                else [scripted]
+                end
   end
 
   def run(cmd, env: {})

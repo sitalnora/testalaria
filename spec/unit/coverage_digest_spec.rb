@@ -27,4 +27,20 @@ RSpec.describe Testalaria::CoverageDigestStore do
       expect(store.load).to eq({})
     end
   end
+
+  it "returns an empty hash when the file holds non-mapping YAML" do
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "cov.yml")
+      File.write(path, "- 1\n- 2\n")
+      expect(described_class.new(path: path).load).to eq({})
+    end
+  end
+
+  it "derives its default path from TESTALARIA_COVERAGE" do
+    original = ENV["TESTALARIA_COVERAGE"]
+    ENV["TESTALARIA_COVERAGE"] = "/tmp/custom.coverage.yml"
+    expect(described_class.path).to eq("/tmp/custom.coverage.yml")
+  ensure
+    original.nil? ? ENV.delete("TESTALARIA_COVERAGE") : ENV["TESTALARIA_COVERAGE"] = original
+  end
 end

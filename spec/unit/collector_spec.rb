@@ -102,4 +102,47 @@ RSpec.describe Testalaria::Collector do
     src2 = Testalaria::CoverageSource.new(double(peek_result: oneshot))
     expect { src2.peek }.to raise_error(Testalaria::OneshotCoverageError)
   end
+
+  it "attributes lines to toplevel when the file cannot be parsed mid-run" do
+    Dir.mktmpdir do |root|
+      abs = File.join(root, "broken.rb")
+      File.write(abs, "def (\n") # unparseable: DefIndex falls back to empty
+      before = { abs => [0] }
+      after  = { abs => [1] }
+      cov = FakeCoverage.new(snapshots: [before, after])
+      collector = described_class.new(coverage: cov, root: root)
+
+      collector.start_example
+      expect(collector.finish_example).to eq("broken.rb" => [Testalaria::DefIndex::TOPLEVEL])
+    end
+  end
+
+  it "drops touched files under the ignored test/spec prefixes" do
+    Dir.mktmpdir do |root|
+      FileUtils.mkdir_p(File.join(root, "spec"))
+      abs = File.join(root, "spec", "player_spec.rb")
+      File.write(abs, "class PlayerSpec\n  def t; end\nend\n")
+      before = { abs => [0, 0, 0] }
+      after  = { abs => [1, 0, 0] } # line 1 moved, but the file is ignored
+      cov = FakeCoverage.new(snapshots: [before, after])
+      collector = described_class.new(coverage: cov, root: root)
+
+      collector.start_example
+      expect(collector.finish_example).to eq({})
+    end
+  end
+
+  it "attributes a metaprogrammed (define_method) body to toplevel — it has no static name" do
+    Dir.mktmpdir do |root|
+      abs = File.join(root, "player.rb")
+      File.write(abs, "class Player\n  define_method(:hi) do\n    1\n  end\nend\n")
+      before = { abs => [nil, nil, 0, nil, nil] }
+      after  = { abs => [nil, nil, 1, nil, nil] } # line 3 (block body) moved
+      cov = FakeCoverage.new(snapshots: [before, after])
+      collector = described_class.new(coverage: cov, root: root)
+
+      collector.start_example
+      expect(collector.finish_example).to eq("player.rb" => [Testalaria::DefIndex::TOPLEVEL])
+    end
+  end
 end

@@ -11,6 +11,10 @@ RSpec.describe Testalaria::Map do
         "./spec/a_spec.rb[1:1]" => { "a.rb" => ["A#m"] }
       }
       yaml = described_class.dump(map)
+
+      # Peek at the on-disk shape (run with `--format doc` to see it inline).
+      puts "\n----- map YAML -----\n#{yaml}--------------------"
+
       # a_spec sorts before z_spec; within z_spec, a.rb before b.rb; methods sorted
       expect(yaml.index("a_spec")).to be < yaml.index("z_spec")
       expect(yaml.index("a.rb")).to be < yaml.index("b.rb")
@@ -53,6 +57,35 @@ RSpec.describe Testalaria::Map do
               "./spec/y_spec.rb[1:1]" => { "b.rb" => ["B#m"] } }
       pruned = described_class.prune_by_prefix(map, "./spec/x_spec.rb")
       expect(pruned.keys).to contain_exactly(:version, "./spec/y_spec.rb[1:1]")
+    end
+  end
+
+  describe ".prune_examples" do
+    it "removes the named example ids, keeping the rest and the metadata" do
+      map = { version: 1,
+              "e1" => { "a.rb" => ["A#m"] },
+              "e2" => { "b.rb" => ["B#n"] } }
+      pruned = described_class.prune_examples(map, ["e1"])
+      expect(pruned.keys).to contain_exactly(:version, "e2")
+    end
+  end
+
+  describe ".load edge cases" do
+    it "returns an empty scaffold for nil, blank, or whitespace-only input" do
+      [nil, "", "   \n"].each do |blank|
+        expect(described_class.load(blank)).to eq(described_class.empty)
+      end
+    end
+
+    it "returns an empty scaffold when the YAML is not a mapping" do
+      expect(described_class.load("- 1\n- 2\n")).to eq(described_class.empty)
+    end
+  end
+
+  describe ".empty" do
+    it "is version-stamped and holds no example keys" do
+      expect(described_class.empty).to eq(version: Testalaria::Map::VERSION)
+      expect(described_class.example_keys(described_class.empty)).to eq([])
     end
   end
 end

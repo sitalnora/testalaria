@@ -131,4 +131,87 @@ RSpec.describe Testalaria::DefIndex do
       expect(table(src)).to eq([["Player#x", 2..2]])
     end
   end
+
+  it "qualifies methods by a compact-nested class path (Foo::Bar)" do
+    src = <<~RUBY
+      class Outer::Inner
+        def m; end
+      end
+    RUBY
+    expect(table(src)).to eq([["Outer::Inner#m", 2..2]])
+  end
+
+  it "resolves a top-level-anchored constant (::Foo)" do
+    src = <<~RUBY
+      class ::Foo
+        def m; end
+      end
+    RUBY
+    expect(table(src)).to eq([["Foo#m", 2..2]])
+  end
+
+  it "indexes a class-level `def self.x` singleton" do
+    src = <<~RUBY
+      class Player
+        def self.build; end
+      end
+    RUBY
+    expect(table(src)).to eq([["Player.build", 2..2]])
+  end
+
+  it "records multiple singleton methods in one `class << self` block" do
+    src = <<~RUBY
+      class Player
+        class << self
+          def a; end
+          def b; end
+        end
+      end
+    RUBY
+    expect(table(src)).to eq([["Player.a", 3..3], ["Player.b", 4..4]])
+  end
+
+  it "flags a def nested inside a def as dynamic and indexes only the outer" do
+    src = <<~RUBY
+      class Player
+        def outer
+          def inner; end
+        end
+      end
+    RUBY
+    di = described_class.build(src)
+    expect(di.entries.map(&:name)).to eq(["Player#outer"])
+    expect(di.dynamic?).to be(true)
+  end
+
+  it "flags module_eval and instance_eval as dynamic" do
+    expect(described_class.build("class P\n  module_eval { 1 }\nend\n").dynamic?).to be(true)
+    expect(described_class.build("class P\n  instance_eval { 1 }\nend\n").dynamic?).to be(true)
+  end
+
+  it "builds an empty, non-dynamic index from empty source (the collector fallback)" do
+    di = described_class.build("")
+    expect(di.entries).to eq([])
+    expect(di.dynamic?).to be(false)
+    expect(Testalaria::Resolver.new(di).method_for(1)).to eq(described_class::TOPLEVEL)
+  end
+
+  it "flags class_exec and instance_exec as dynamic" do
+    expect(described_class.build("class P\n  class_exec { 1 }\nend\n").dynamic?).to be(true)
+    expect(described_class.build("class P\n  instance_exec { 1 }\nend\n").dynamic?).to be(true)
+  end
+
+  it "still indexes static defs in a file that is also dynamic (mixed)" do
+    src = <<~RUBY
+      class Player
+        def real
+          1
+        end
+        define_method(:dyn) { 2 }
+      end
+    RUBY
+    di = described_class.build(src)
+    expect(di.entries.map(&:name)).to eq(["Player#real"])
+    expect(di.dynamic?).to be(true)
+  end
 end

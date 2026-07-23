@@ -21,6 +21,12 @@ class FakeCoverage
     @running
   end
 
+  # Session calls this on init. The fake is pre-scripted, so starting is a
+  # no-op beyond flipping the running flag.
+  def start(*)
+    @running = true
+  end
+
   attr_reader :mode
 
   # Returns the next scripted snapshot, repeating the last one once exhausted.

@@ -169,4 +169,64 @@ RSpec.describe Testalaria::Selector do
     result = selector.select(changed_source: [source(player_src, hunks: [3..3, 6..6])])
     expect(result.example_reasons["e3"].map(&:method)).to include("Player#fn_one", "Player#fn_two")
   end
+
+  it "a file deleted at HEAD escalates every example that ran it (file_deleted)" do
+    result = selector.select(changed_source: [source(nil, player_src, hunks: [])])
+    expect(result.example_reasons.keys).to contain_exactly("e1", "e2", "e3")
+    expect(result.escalations.map(&:cause)).to include("file_deleted")
+  end
+
+  it "a change with no hunk detail widens to the whole file (file_change)" do
+    result = selector.select(changed_source: [source(player_src, player_src, hunks: [])])
+    expect(result.example_reasons.keys).to contain_exactly("e1", "e2", "e3")
+    expect(result.escalations.map(&:cause)).to include("file_change")
+  end
+
+  it "a toplevel edit in a file with dynamic defs escalates as dynamic_def" do
+    dynamic_src = <<~RUBY
+      class Player
+        define_method(:z) { 1 }
+      end
+    RUBY
+    result = selector.select(
+      changed_source: [source(dynamic_src, player_src, hunks: [2..2])]
+    )
+    expect(result.escalations.map(&:cause)).to include("dynamic_def")
+  end
+
+  it "a plain deleted method (no rename) selects its examples via method_match" do
+    head_only_one = <<~RUBY
+      class Player
+        def fn_one
+          1
+        end
+      end
+    RUBY
+    result = selector.select(
+      changed_source: [source(head_only_one, player_src, hunks: [3..3])]
+    )
+    expect(result.example_reasons["e2"].map(&:rule)).to eq(["method_match"])
+    expect(result.escalations).to be_empty
+  end
+
+  it "matches a stubbed class double (instance_double) as a blind test file" do
+    stub_index = Testalaria::StubIndex.build(
+      "spec/blind_spec.rb" => "let(:p) { instance_double(Player) }\n"
+    )
+    result = selector(stub_index: stub_index)
+             .select(changed_source: [source(player_src, hunks: [3..3])])
+    expect(result.test_files).to include("spec/blind_spec.rb")
+  end
+
+  it "processes several changed source files independently" do
+    team_path = "app/models/team.rb"
+    team_src = "class Team\n  def go; end\nend\n"
+    team = CS.new(path: team_path, hunks: [2..2],
+                  head_index: DI.build(team_src), base_index: DI.build(team_src))
+    map_with_team = map.merge("e4" => { team_path => ["Team#go"] })
+    sel = described_class.new(map: map_with_team, full_run_triggers: [], stub_index: nil)
+
+    result = sel.select(changed_source: [source(player_src, hunks: [3..3]), team])
+    expect(result.example_reasons.keys).to include("e1", "e4")
+  end
 end

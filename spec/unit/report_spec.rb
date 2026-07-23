@@ -111,4 +111,32 @@ RSpec.describe Testalaria::Report do
     expect(report.terminal).to include("1 of 2 examples selected")
     expect(report.terminal).to include("exposed (no known coverage): app/services/new_thing.rb")
   end
+
+  it "lists escalations and untested new code in the terminal output" do
+    text = report.terminal
+    expect(text).to include("escalated app/models/player.rb -> new_method")
+    expect(text).to include("untested new code: Player#apply_bonus (app/models/player.rb)")
+  end
+
+  it "appends the per-example selection trace under VERBOSE" do
+    expect(report.terminal(verbose: true)).to include("e1 <- method_match")
+  end
+
+  context "when the outcome is a full run" do
+    let(:full_outcome) do
+      Testalaria::Flow::Outcome.new(
+        full_run: true, trigger: "Gemfile", selection: selection, suites: [],
+        examples_run: [], map_before: {}, map_after: map_after,
+        changed_test_files: [], changed_source_files: []
+      )
+    end
+
+    subject(:report) { described_class.new(full_outcome, head: "HEADSHA") }
+
+    it "reports the trigger in both the artifact and the terminal" do
+      expect(report.artifact["selection"]["full_run_triggered"]).to be(true)
+      expect(report.artifact["selection"]["trigger"]).to eq("Gemfile")
+      expect(report.terminal).to include("full run triggered by Gemfile")
+    end
+  end
 end

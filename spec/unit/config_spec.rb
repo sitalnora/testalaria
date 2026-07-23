@@ -47,4 +47,36 @@ RSpec.describe Testalaria::Config do
   it "raises when no runners are configured" do
     expect { described_class.new("runners" => {}) }.to raise_error(Testalaria::ConfigError)
   end
+
+  it "applies defaults for map_path, target_branch, and simplecov" do
+    config = described_class.new(
+      "runners" => { "rspec" => { "command" => "rspec", "pattern" => "spec/**/*_spec.rb" } }
+    )
+    expect(config.map_path).to eq(Testalaria::MapStore::DEFAULT_PATH)
+    expect(config.target_branch).to eq("origin/main")
+    expect(config.simplecov).to eq("auto")
+  end
+
+  it "honors an explicit simplecov setting" do
+    config = described_class.new(
+      "runners" => { "rspec" => { "command" => "rspec", "pattern" => "spec/**/*_spec.rb" } },
+      "simplecov" => false
+    )
+    expect(config.simplecov).to be(false)
+  end
+
+  it "raises ConfigError when the config file is not a mapping" do
+    Dir.mktmpdir do |dir|
+      path = write_config(dir, "- 1\n- 2\n")
+      expect { described_class.load(path) }.to raise_error(Testalaria::ConfigError)
+    end
+  end
+
+  it "matches a deeply nested test path via the runner glob" do
+    config = described_class.new(
+      "runners" => { "minitest" => { "command" => "rails test", "pattern" => "test/**/*_test.rb" } }
+    )
+    expect(config.runner_for("test/models/deep/player_test.rb")&.name).to eq("minitest")
+    expect(config.test_file?("test/models/player.rb")).to be(false)
+  end
 end
