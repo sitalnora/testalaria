@@ -19,6 +19,9 @@ module Testalaria
 
     DEFAULT_TRIGGERS = %w[Gemfile Gemfile.lock].freeze
 
+    # Per-run artifacts that are regenerated and must never be committed.
+    GITIGNORE_PATHS = %w[.testalaria.report.yml .testalaria.coverage.yml].freeze
+
     module_function
 
     # @param commands [Hash] "rspec"/"minitest" => command string
@@ -30,6 +33,7 @@ module Testalaria
 
       write_config(config_path, map_path, runners)
       append_dockerignore(map_path)
+      append_gitignore
       seed(runners, process, git, out, map_path)
       out.puts "testalaria: wrote #{config_path} and seeded #{map_path}"
       print_activation_hint(runners, out)
@@ -63,6 +67,16 @@ module Testalaria
       return if existing.split("\n").include?(map_path)
 
       File.write(path, "#{existing}#{existing.empty? ? '' : "\n"}#{map_path}\n")
+    end
+
+    # Add the ephemeral report/coverage artifacts to .gitignore (the map and
+    # config are intentionally committed, so they are not listed here).
+    def append_gitignore(paths: GITIGNORE_PATHS, path: ".gitignore")
+      lines = File.exist?(path) ? File.read(path).split("\n") : []
+      missing = paths - lines
+      return if missing.empty?
+
+      File.write(path, (lines + missing).join("\n") + "\n")
     end
 
     def seed(runners, process, git, out, map_path)

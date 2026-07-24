@@ -56,6 +56,27 @@ bundle exec rake -T | grep testalaria
 
 ## Setup (one time)
 
+### Step 1 — activate the collector in your suite (do this FIRST)
+
+The map is built *inside* your test process, so the collector must load there — and it
+must be in place **before** you seed, or the seed run records nothing.
+
+- **RSpec** — add one line to your `.rspec` (there's no auto-discovery hook):
+
+  ```
+  --require testalaria/rspec
+  ```
+
+  > ⚠️ **This is mandatory for RSpec.** Without it, `setup` runs your suite but the
+  > collector never activates, so **`.testalaria.yml` is never created** — and because
+  > `setup` hides the seed's output, it fails silently. It's a no-op unless
+  > `TESTALARIA=1`, so it's safe to leave in permanently.
+
+- **Minitest** — nothing to do. The bundled plugin (`minitest/testalaria_plugin.rb`)
+  is auto-discovered and is a no-op unless `TESTALARIA=1`.
+
+### Step 2 — seed the map
+
 Record your suite command(s) and build the initial map. Pass at least one of
 `RSPEC_CMD` / `MINITEST_CMD`:
 
@@ -73,24 +94,26 @@ bundle exec rake testalaria:setup RSPEC_CMD="bundle exec rspec" MINITEST_CMD="bi
 This:
 
 1. writes `.testalaria.config.yml` (commit it),
-2. appends `.testalaria.yml` to `.dockerignore`,
-3. runs your **whole suite once** under `TESTALARIA=1` to seed the map — so it takes
+2. appends `.testalaria.yml` to `.dockerignore` (the map is committed but shouldn't ship in images),
+3. adds the ephemeral `.testalaria.report.yml` / `.testalaria.coverage.yml` to `.gitignore`,
+4. runs your **whole suite once** under `TESTALARIA=1` to seed the map — so it takes
    roughly your normal suite time × ~1.5–2 (coverage overhead).
 
-### Activating collection in your suite
+### Step 3 — verify
 
-The map is built *inside* your test process, so the collector must load there:
+`setup` captures the seed's output, so confirm the map was actually written:
 
-- **Minitest** — nothing to do. The bundled plugin (`minitest/testalaria_plugin.rb`)
-  is auto-discovered and is a no-op unless `TESTALARIA=1`.
-- **RSpec** — add one line to your `.rspec` (there's no auto-discovery hook):
+```bash
+ls -la .testalaria.yml                 # should exist and be non-trivial
+grep -c '_spec.rb\|_test.rb' .testalaria.yml   # > 0 means examples were recorded
+```
 
-  ```
-  --require testalaria/rspec
-  ```
+If it's missing or empty, the collector didn't activate. Re-run with the seed output
+visible to see what happened:
 
-  It's a no-op unless `TESTALARIA=1`, so it's safe to leave in permanently. **If you
-  skip this, the seed records an empty map.**
+```bash
+TESTALARIA_PROGRESS=1 bundle exec rake testalaria:setup RSPEC_CMD="bundle exec rspec"
+```
 
 ### Minitest command requirements
 
