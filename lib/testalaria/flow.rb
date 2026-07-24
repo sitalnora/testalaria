@@ -39,6 +39,7 @@ module Testalaria
       base = @git.merge_base(target)
       changed = @git.changed_files(base)
       test_files, source_files = split_changed(changed)
+      log("target #{target} @ #{base[0, 8]} - #{test_files.size} test, #{source_files.size} source file(s) changed")
 
       map_before = @store.load
       suites = []
@@ -46,7 +47,10 @@ module Testalaria
 
       # Step 2-3: purge the changed test files' stale keys, then run them.
       purge_test_files(test_files)
-      suites.concat(run_test_files(test_files)) unless test_files.empty?
+      unless test_files.empty?
+        log("running #{test_files.size} changed test file(s) to refresh the map")
+        suites.concat(run_test_files(test_files))
+      end
 
       # Reload after the collectors in step 2 wrote fresh entries.
       map = @store.load
@@ -54,13 +58,17 @@ module Testalaria
       selection = build_selection(map, changed_sources, test_files)
 
       if selection.full_run
+        log("full run triggered by #{selection.trigger}")
         suites.concat(run_full)
       else
         already = already_ran_examples(map, test_files)
         remainder = selection.example_reasons.keys - already.to_a
+        extra_files = selection.test_files - test_files
+        log("selected #{selection.example_reasons.size} example(s); running #{remainder.size} example(s) + #{extra_files.size} test file(s)")
         suites.concat(run_examples(remainder))
-        suites.concat(run_test_files(selection.test_files - test_files))
+        suites.concat(run_test_files(extra_files))
       end
+      log("done - #{suites.size} suite invocation(s)")
 
       Outcome.new(
         full_run: selection.full_run,
@@ -117,7 +125,13 @@ module Testalaria
 
     private
 
+    # Opt-in progress, to stderr so it never pollutes the report on stdout.
+    def log(message)
+      warn "testalaria: #{message}" if ENV["TESTALARIA_PROGRESS"] == "1"
+    end
+
     def build_selection(map, changed_sources, test_files)
+      log("analyzing #{Map.example_keys(map).size} mapped example(s) + indexing stubs across test files...")
       stub_index = build_stub_index
       selector = Selector.new(map: map, full_run_triggers: @config.full_run_triggers, stub_index: stub_index)
       selector.select(

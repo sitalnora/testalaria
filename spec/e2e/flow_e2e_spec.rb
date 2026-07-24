@@ -3,6 +3,7 @@
 require "spec_helper"
 require "tmpdir"
 require "open3"
+require "shellwords"
 
 # L4 — end-to-end flow. Builds a real git repo with a seeded map, scripts a
 # synthetic PR (edit one method), and drives the real Flow with real git and a
@@ -71,9 +72,11 @@ RSpec.describe "testalaria:run flow", :integration do
     expect(outcome.full_run).to be(false)
     expect(outcome.selection.example_reasons.keys).to contain_exactly("./spec/player_spec.rb[1:1]")
 
-    cmd = process.calls.map { |c| c[:cmd] }.join(" | ")
-    expect(cmd).to include("./spec/player_spec.rb[1:1]")
-    expect(cmd).not_to include("[1:2]")
+    # Ids are shell-escaped on the command line; recover them the way the shell
+    # would to assert the right example ran and the other didn't.
+    argv = process.calls.flat_map { |c| Shellwords.split(c[:cmd]) }
+    expect(argv).to include("./spec/player_spec.rb[1:1]")
+    expect(argv).not_to include("./spec/player_spec.rb[1:2]")
     expect(Testalaria::Flow.exit_status(outcome)).to eq(0)
   end
 end

@@ -93,5 +93,23 @@ RSpec.describe Testalaria::Session do
         expect(store.dumps.last[:commit]).to be_nil
       end
     end
+
+    # Regression: SimpleCov (or, on Ruby < 3.1, an undetectable state) can stop
+    # Coverage before suite end, so peek raises "coverage measurement is not
+    # enabled". The map is written before the digest, so flush must still succeed.
+    it "still writes the map when Coverage is disabled at digest time" do
+      Dir.mktmpdir do |dir|
+        ENV["TESTALARIA_COVERAGE"] = File.join(dir, "cov.yml")
+        cov = FakeCoverage.new
+        def cov.peek
+          raise "coverage measurement is not enabled"
+        end
+        store = FakeMapStore.new
+        session = described_class.new(coverage: cov, store: store, clock: FixedClock.new)
+
+        expect { session.flush }.not_to raise_error
+        expect(store.dumps.last[:version]).to eq(Testalaria::Map::VERSION)
+      end
+    end
   end
 end

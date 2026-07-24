@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "open3"
+require "shellwords"
 require "testalaria/def_index"
 
 module Testalaria
@@ -14,8 +15,15 @@ module Testalaria
     # The default process seam (Open3). Swapped for FakeRunner in tests.
     class ProcessRunner
       def run(cmd, env: {})
-        stdout, status = Open3.capture2(env, cmd)
-        Result.new(exit_status: status.exitstatus, stdout: stdout)
+        # With TESTALARIA_PROGRESS=1, stream the suite's own output live so you
+        # can watch it run; otherwise capture it (quiet — the default).
+        if ENV["TESTALARIA_PROGRESS"] == "1"
+          ok = system(env, cmd)
+          Result.new(exit_status: ok ? 0 : 1, stdout: "")
+        else
+          stdout, status = Open3.capture2(env, cmd)
+          Result.new(exit_status: status.exitstatus, stdout: stdout)
+        end
       end
     end
 
@@ -53,15 +61,26 @@ module Testalaria
 
         by_file[file] << test
       end
-      by_file.flat_map do |file, tests|
-        [file, "-n", "/#{tests.map { |t| Regexp.escape(t) }.join('|')}/"]
-      end
+      return [] if by_file.empty?
+
+      # Minitest/Rails honor only the LAST -n, so a -n per file would silently
+      # drop every file but one. Pass all target files and ONE combined filter:
+      # every file loads and the union of names runs (cross-file name collisions
+      # merely over-select, which is safe) — in a single boot.
+      names = by_file.values.flatten.map { |t| Regexp.escape(t) }
+      [*by_file.keys, "-n", "/#{names.join('|')}/"]
     end
 
     private
 
     def invoke(command, targets, env)
-      cmd = [command, *targets].reject { |t| t.nil? || t.empty? }.join(" ")
+      # The command is a raw shell string (may carry env prefixes / binstubs),
+      # so it runs through a shell. Targets, though, can contain shell
+      # metacharacters — RSpec ids have `[1:1]` (globs), Minitest filters are
+      # `-n /a|b/` (pipes + slashes) — so each is shell-escaped to reach the
+      # runner intact instead of being split into a bogus pipeline.
+      args = targets.reject { |t| t.nil? || t.empty? }.map { |t| Shellwords.escape(t) }
+      cmd = [command, *args].join(" ")
       @process.run(cmd, env: @base_env.merge(env))
     end
 

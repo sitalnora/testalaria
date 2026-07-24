@@ -70,9 +70,16 @@ module Testalaria
 
     private
 
+    # Best-effort: the line-level diff-coverage sidecar. If the Coverage session
+    # is no longer enabled at suite end — SimpleCov collects its result and stops
+    # measurement first, and on Ruby < 3.1 (no Coverage.running?) we can't detect
+    # that to piggyback cleanly — the map is already written above, so degrade to
+    # skipping the digest rather than crashing the whole suite/seed.
     def flush_coverage_digest
       store = CoverageDigestStore.new
       store.dump(CoverageDigest.merge(store.load, @collector.executed_lines))
+    rescue StandardError => e
+      warn "testalaria: skipping coverage digest — #{e.message}"
     end
 
     def commit

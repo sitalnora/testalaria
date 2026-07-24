@@ -41,7 +41,8 @@ module Testalaria
       Psych.dump(artifact)
     end
 
-    def terminal(verbose: false)
+    # trace: :small prints "example <- rule"; :big adds "(file method)".
+    def terminal(verbose: false, trace: :big)
       lines = []
       lines << "testalaria: #{summary_line}"
       affected["uncovered_changed_files"].each do |f|
@@ -53,7 +54,7 @@ module Testalaria
       untested_new_code.each do |u|
         lines << "  untested new code: #{u['method']} (#{u['file']})"
       end
-      lines.concat(trace_lines) if verbose
+      lines.concat(trace_lines(trace)) if verbose
       lines.join("\n")
     end
 
@@ -130,7 +131,11 @@ module Testalaria
     end
 
     def diff_coverage_available?
-      @executed_lines && @changed_sources && !@changed_sources.empty?
+      # An *empty* digest means we have no line data (e.g. the digest flush was
+      # skipped because Coverage was already stopped) — not that everything is
+      # uncovered. Treat that as unavailable and fall back, rather than flagging
+      # every changed line as untested.
+      @executed_lines && !@executed_lines.empty? && @changed_sources && !@changed_sources.empty?
     end
 
     def diff_coverage
@@ -188,11 +193,21 @@ module Testalaria
         "method" => reason.method, "cause" => reason.cause }.compact
     end
 
-    def trace_lines
+    def trace_lines(level = :big)
       selection_trace.map do |key, reasons|
-        rules = reasons.map { |r| r["rule"] }.uniq.join(", ")
-        "  #{key} <- #{rules}"
+        detail = reasons.map { |r| trace_reason(r, level) }.uniq.join(", ")
+        "  #{key} <- #{detail}"
       end
+    end
+
+    # :small -> just the rule ("method_match"). :big -> rule + the changed
+    # file/method that pulled this example in ("method_match (app/... Foo#bar)").
+    def trace_reason(reason, level = :big)
+      return reason["rule"] if level == :small
+
+      label = [reason["rule"], reason["cause"]].compact.join(" ")
+      loc = [reason["file"], reason["method"]].compact.join(" ")
+      loc.empty? ? label : "#{label} (#{loc})"
     end
   end
 end

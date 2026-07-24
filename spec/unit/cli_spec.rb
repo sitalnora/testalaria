@@ -50,7 +50,8 @@ RSpec.describe Testalaria::CLI do
     end
 
     around do |example|
-      saved = { "TARGET_BRANCH" => ENV["TARGET_BRANCH"], "VERBOSE" => ENV["VERBOSE"] }
+      keys = %w[TARGET_BRANCH VERBOSE VERBOSE_SMALL VERBOSE_BIG]
+      saved = keys.to_h { |k| [k, ENV[k]] }
       Dir.mktmpdir do |dir|
         @dir = dir
         example.run
@@ -84,7 +85,7 @@ RSpec.describe Testalaria::CLI do
       expect(status).to eq(1)
     end
 
-    it "appends the selection trace to the terminal output when VERBOSE=1" do
+    it "appends a small selection trace (rule only) when VERBOSE=1" do
       ENV["VERBOSE"] = "1"
       allow(Testalaria::Git).to receive(:new).and_return(double(head_sha: "HEADSHA"))
       allow(Testalaria::Flow).to receive(:new).and_return(double(run: build_outcome(exit_status: 0)))
@@ -92,6 +93,17 @@ RSpec.describe Testalaria::CLI do
 
       described_class.run(config_path: write_config, out: out, artifact_path: File.join(@dir, "r.yml"))
       expect(out.string).to include("e1 <- method_match")
+      expect(out.string).not_to include("app/models/player.rb Player#fn_one") # small omits the location
+    end
+
+    it "appends a big selection trace (rule + file/method) when VERBOSE_BIG=1" do
+      ENV["VERBOSE_BIG"] = "1"
+      allow(Testalaria::Git).to receive(:new).and_return(double(head_sha: "HEADSHA"))
+      allow(Testalaria::Flow).to receive(:new).and_return(double(run: build_outcome(exit_status: 0)))
+      out = StringIO.new
+
+      described_class.run(config_path: write_config, out: out, artifact_path: File.join(@dir, "r.yml"))
+      expect(out.string).to include("e1 <- method_match (app/models/player.rb Player#fn_one)")
     end
 
     it "raises ConfigError when the config file is missing" do

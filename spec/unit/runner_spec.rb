@@ -2,6 +2,7 @@
 
 require "spec_helper"
 require "tmpdir"
+require "shellwords"
 
 RSpec.describe Testalaria::Runner do
   let(:process) { FakeRunner.new(scripted: { exit_status: 0, stdout: "" }) }
@@ -17,21 +18,34 @@ RSpec.describe Testalaria::Runner do
     expect(call[:env]).to include("TESTALARIA" => "1")
   end
 
-  it "passes RSpec example ids through as targets" do
+  it "passes RSpec example ids through as targets, shell-safe for [i:j] globs" do
     runner.run_examples(rspec, ["./spec/a_spec.rb[1:1]", "./spec/a_spec.rb[1:2]"])
-    expect(process.calls.first[:cmd]).to eq(
-      "bundle exec rspec ./spec/a_spec.rb[1:1] ./spec/a_spec.rb[1:2]"
-    )
+    # After the shell parses the command, rspec receives the ids intact.
+    argv = Shellwords.split(process.calls.first[:cmd])
+    expect(argv).to eq(["bundle", "exec", "rspec", "./spec/a_spec.rb[1:1]", "./spec/a_spec.rb[1:2]"])
   end
 
-  it "groups Minitest example ids by file with an -n filter" do
-    locator = Testalaria::TestLocator.new(
-      "PlayerTest" => "test/player_test.rb"
-    )
+  it "groups Minitest example ids by file with an -n filter (pipes survive the shell)" do
+    locator = Testalaria::TestLocator.new("PlayerTest" => "test/player_test.rb")
     runner.run_examples(minitest, %w[PlayerTest#test_a PlayerTest#test_b], locator: locator)
-    expect(process.calls.first[:cmd]).to eq(
-      'bundle exec rails test test/player_test.rb -n /test_a|test_b/'
+    # The `|` must reach minitest as a regex alternation, not be a shell pipe.
+    argv = Shellwords.split(process.calls.first[:cmd])
+    expect(argv).to include("test/player_test.rb", "-n", "/test_a|test_b/")
+  end
+
+  it "combines several files into ONE -n filter in a single invocation" do
+    # Regression: a -n per file means Minitest keeps only the last -n and runs
+    # just that file. All files must load under one combined filter, one boot.
+    locator = Testalaria::TestLocator.new(
+      "Atest" => "test/a_test.rb", "Btest" => "test/b_test.rb"
     )
+    runner.run_examples(minitest, %w[Atest#test_one Btest#test_two], locator: locator)
+
+    expect(process.calls.size).to eq(1)
+    argv = Shellwords.split(process.calls.first[:cmd])
+    expect(argv).to include("test/a_test.rb", "test/b_test.rb")
+    expect(argv.count("-n")).to eq(1)
+    expect(argv.last).to eq("/test_one|test_two/")
   end
 
   it "merges caller env over the TESTALARIA base flag" do
@@ -50,10 +64,12 @@ RSpec.describe Testalaria::Runner do
     expect(process.calls.first[:cmd]).to eq("bundle exec rails test")
   end
 
-  it "escapes regex metacharacters in Minitest test names" do
+  it "regex-escapes metacharacters in Minitest test names (and stays shell-safe)" do
     locator = Testalaria::TestLocator.new("PlayerTest" => "test/player_test.rb")
     runner.run_examples(minitest, ["PlayerTest#test_a?"], locator: locator)
-    expect(process.calls.first[:cmd]).to eq('bundle exec rails test test/player_test.rb -n /test_a\?/')
+    # Regexp.escape turns `?` into `\?` inside the /.../; the shell delivers it intact.
+    argv = Shellwords.split(process.calls.first[:cmd])
+    expect(argv).to include("-n", '/test_a\?/')
   end
 
   describe Testalaria::TestLocator do

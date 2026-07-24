@@ -102,6 +102,30 @@ RSpec.describe Testalaria::Report do
     end
   end
 
+  context "when the coverage digest is empty (e.g. it was skipped)" do
+    let(:outcome) do
+      Testalaria::Flow::Outcome.new(
+        full_run: false, trigger: nil, selection: selection, suites: [],
+        examples_run: ["e1"], map_before: {}, map_after: map_after,
+        changed_test_files: [], changed_source_files: ["app/models/player.rb"],
+        changed_sources: [Testalaria::Selector::ChangedSource.new(
+          path: "app/models/player.rb", hunks: [3..3, 8..9],
+          head_index: Testalaria::DefIndex.build("class Player\n  def fn_one\n    1\n  end\nend\n"),
+          base_index: nil
+        )],
+        executed_lines: {} # skipped digest -> no line data
+      )
+    end
+
+    it "does not flag every changed line as untested; falls back to new_method escalations" do
+      untested = report.artifact["untested_new_code"]
+      # Only the genuinely-new method (from escalations) is reported, not fn_one.
+      expect(untested).to contain_exactly(
+        "file" => "app/models/player.rb", "method" => "Player#apply_bonus"
+      )
+    end
+  end
+
   it "emits a selection trace keyed by example" do
     trace = report.artifact["selection_trace"]
     expect(trace["e1"].first["rule"]).to eq("method_match")

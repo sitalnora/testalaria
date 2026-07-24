@@ -23,9 +23,19 @@ module Testalaria
 
       report = Report.new(outcome, head: head_sha(git))
       File.write(artifact_path, report.artifact_yaml)
-      out.puts report.terminal(verbose: ENV["VERBOSE"] == "1")
+      verbose, trace = trace_mode
+      out.puts report.terminal(verbose: verbose, trace: trace)
 
       Flow.exit_status(outcome)
+    end
+
+    # VERBOSE_BIG -> full "rule (file method)" chain; VERBOSE / VERBOSE_SMALL ->
+    # just "rule". Returns [verbose?, level].
+    def trace_mode
+      return [true, :big] if ENV["VERBOSE_BIG"] == "1"
+      return [true, :small] if ENV["VERBOSE"] == "1" || ENV["VERBOSE_SMALL"] == "1"
+
+      [false, :small]
     end
 
     # Implements `testalaria:lint` — repo-wide nondeterminism scan.
