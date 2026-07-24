@@ -17,9 +17,7 @@ module Testalaria
       "minitest" => "test/**/*_test.rb"
     }.freeze
 
-    DEFAULT_TRIGGERS = %w[
-      Gemfile Gemfile.lock config/** db/schema.rb spec/factories/** test/factories/**
-    ].freeze
+    DEFAULT_TRIGGERS = %w[Gemfile Gemfile.lock].freeze
 
     module_function
 
