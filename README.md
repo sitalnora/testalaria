@@ -1,5 +1,10 @@
 # testalaria
 
+<p align="center">
+  <img width="500" height="300" alt="image" src="https://github.com/user-attachments/assets/3fa5a82f-ddbf-427c-8391-b51566a68671" />
+</p>
+
+
 Regression test selection for Ruby (≥ 2.7), framework-agnostic across **RSpec** and
 **Minitest**. Run only the tests a change could plausibly break, instead of the whole
 suite.
