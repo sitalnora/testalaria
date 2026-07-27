@@ -110,6 +110,53 @@ RSpec.describe Testalaria::Flow do
     end
   end
 
+  describe "#plan" do
+    around { |example| Dir.mktmpdir { |dir| Dir.chdir(dir) { example.run } } }
+
+    let(:seeded_map) do
+      {
+        version: 1,
+        "./spec/player_spec.rb[1:1]" => { "app/models/player.rb" => ["Player#fn_one"] },
+        "./spec/player_spec.rb[1:2]" => { "app/models/player.rb" => ["Player#fn_two"] }
+      }
+    end
+
+    let(:process) { FakeRunner.new }
+
+    def plan_flow(cfg: config, changed_files: [], hunks: {})
+      git = FakeGit.new(merge_base: "BASE", changed_files: changed_files, hunks: hunks)
+      described_class.new(
+        config: cfg, git: git,
+        runner: Testalaria::Runner.new(process: process),
+        store: FakeMapStore.new(initial: seeded_map)
+      )
+    end
+
+    it "lists the selected example ids and runs nothing" do
+      FileUtils.mkdir_p("app/models")
+      File.write("app/models/player.rb", "class Player\n  def fn_one\n    11\n  end\n  def fn_two\n    2\n  end\nend\n")
+      flow = plan_flow(changed_files: ["app/models/player.rb"], hunks: { "app/models/player.rb" => [3..3] })
+
+      plan = flow.plan
+
+      expect(plan.full_run).to be(false)
+      expect(plan.example_ids).to contain_exactly("./spec/player_spec.rb[1:1]")
+      expect(process.calls).to eq([]) # selection only — nothing executed
+    end
+
+    it "signals a full run via the plan flag" do
+      cfg = Testalaria::Config.new(
+        "runners" => { "rspec" => { "command" => "rspec", "pattern" => "spec/**/*_spec.rb" } },
+        "full_run_triggers" => ["Gemfile"]
+      )
+      flow = plan_flow(cfg: cfg, changed_files: ["Gemfile"], hunks: {})
+
+      plan = flow.plan
+      expect(plan.full_run).to be(true)
+      expect(plan.trigger).to eq("Gemfile")
+    end
+  end
+
   describe "#changed_constants" do
     def source(path, body, hunks)
       Testalaria::Selector::ChangedSource.new(

@@ -38,6 +38,23 @@ module Testalaria
       [false, :small]
     end
 
+    # Implements `testalaria:list` — print the selected targets (one per line)
+    # WITHOUT running them, so CI can shard the list across parallel workers.
+    # A full run prints the single sentinel line `ALL`; empty output means
+    # nothing is affected. Progress/logs go to stderr, keeping stdout a clean
+    # pipeable list.
+    def list(config_path: Config::DEFAULT_PATH, out: $stdout)
+      config = Config.load(config_path)
+      plan = Flow.new(config: config, git: Git.new).plan(target_branch: ENV["TARGET_BRANCH"])
+
+      if plan.full_run
+        out.puts "ALL"
+      else
+        (plan.example_ids + plan.test_files).each { |target| out.puts target }
+      end
+      0
+    end
+
     # Implements `testalaria:lint` — repo-wide nondeterminism scan.
     def lint(config_path: Config::DEFAULT_PATH, out: $stdout)
       config = Config.load(config_path)

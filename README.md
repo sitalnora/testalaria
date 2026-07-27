@@ -151,6 +151,38 @@ Repo-wide nondeterminism scan (informational, never fails the build):
 bundle exec rake testalaria:lint
 ```
 
+### Parallelizing / sharding the selection
+
+`testalaria:run` executes the selection in a single process. For a large suite you
+usually want to **select once, then shard across CI workers**. `testalaria:list`
+prints the selected targets (example ids + whole test files), one per line, **without
+running them** — so one job does the analysis and the rest just run their slice:
+
+```bash
+bundle exec rake testalaria:list > targets.txt
+```
+
+- Each line is a target: an RSpec id (`./spec/x_spec.rb[1:1]`), or a whole test file.
+- A single line `ALL` means a full run was triggered (run everything).
+- Empty output means nothing is affected (run nothing).
+- Progress/logs go to stderr, so stdout stays a clean, pipeable list.
+
+Sketch of a sharded CI setup (one analysis job, then a matrix):
+
+```bash
+# job 1 — analyze once, publish the list as an artifact
+bundle exec rake testalaria:list > targets.txt
+
+# jobs 2..N — each worker runs its slice
+if [ "$(cat targets.txt)" = "ALL" ]; then
+  # full run; shard the whole suite however you already do
+else
+  split -n "l/${SHARD_INDEX}/${SHARD_TOTAL}" targets.txt | xargs bundle exec rspec
+fi
+```
+
+testalaria decides *which* tests; your existing parallel runner decides *how fast*.
+
 ---
 
 ## Flags & environment variables

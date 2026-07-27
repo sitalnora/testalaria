@@ -23,6 +23,11 @@ namespace :testalaria do
     exit(Testalaria::CLI.run)
   end
 
+  desc "Print the selected test targets (one per line; 'ALL' = full run) without running them, for sharding"
+  task :list do
+    exit(Testalaria::CLI.list)
+  end
+
   desc "Repo-wide nondeterminism scan"
   task :lint do
     exit(Testalaria::CLI.lint)

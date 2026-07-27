@@ -26,6 +26,10 @@ module Testalaria
       keyword_init: true
     )
 
+    # What `testalaria:list` emits: the selection as a runnable target list,
+    # computed WITHOUT running anything, so a CI job can shard it across workers.
+    Plan = Struct.new(:full_run, :trigger, :example_ids, :test_files, keyword_init: true)
+
     def initialize(config:, git:, runner: Runner.new, store: nil)
       @config = config
       @git = git
@@ -82,6 +86,28 @@ module Testalaria
         changed_source_files: source_files,
         changed_sources: changed_sources,
         executed_lines: CoverageDigestStore.new(path: @coverage_path).load
+      )
+    end
+
+    # Compute the selection as a runnable target list, without executing (or
+    # touching) anything — for `testalaria:list`, so the work can be sharded.
+    # Uses the committed map as-is (no changed-test-file refresh), since nothing
+    # runs here; the shards do the running (and, if desired, the map refresh).
+    def plan(target_branch: nil)
+      target = target_branch || @config.target_branch
+      base = @git.merge_base(target)
+      test_files, source_files = split_changed(@git.changed_files(base))
+
+      map = @store.load
+      changed_sources = source_files.map { |p| changed_source(base, p) }
+      selection = build_selection(map, changed_sources, test_files)
+
+      return Plan.new(full_run: true, trigger: selection.trigger, example_ids: [], test_files: []) if selection.full_run
+
+      Plan.new(
+        full_run: false, trigger: nil,
+        example_ids: (selection.example_reasons.keys - already_ran_examples(map, test_files)),
+        test_files: selection.test_files
       )
     end
 

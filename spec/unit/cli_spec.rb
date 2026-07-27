@@ -113,6 +113,53 @@ RSpec.describe Testalaria::CLI do
     end
   end
 
+  # `list` computes the selection and prints targets without running — stub the
+  # Flow so we assert only the CLI's formatting of the plan.
+  describe ".list" do
+    around do |example|
+      saved = ENV["TARGET_BRANCH"]
+      Dir.mktmpdir { |dir| @dir = dir; example.run }
+    ensure
+      saved.nil? ? ENV.delete("TARGET_BRANCH") : ENV["TARGET_BRANCH"] = saved
+    end
+
+    def write_config
+      path = File.join(@dir, ".testalaria.config.yml")
+      File.write(path, <<~YAML)
+        runners:
+          rspec:
+            command: rspec
+            pattern: "spec/**/*_spec.rb"
+      YAML
+      path
+    end
+
+    it "prints selected example ids and test files, one per line" do
+      plan = Testalaria::Flow::Plan.new(
+        full_run: false, trigger: nil,
+        example_ids: ["./spec/a_spec.rb[1:1]"], test_files: ["spec/b_spec.rb"]
+      )
+      allow(Testalaria::Git).to receive(:new).and_return(double)
+      allow(Testalaria::Flow).to receive(:new).and_return(double(plan: plan))
+      out = StringIO.new
+
+      status = described_class.list(config_path: write_config, out: out)
+
+      expect(status).to eq(0)
+      expect(out.string.split("\n")).to eq(["./spec/a_spec.rb[1:1]", "spec/b_spec.rb"])
+    end
+
+    it "prints the ALL sentinel for a full run" do
+      plan = Testalaria::Flow::Plan.new(full_run: true, trigger: "Gemfile", example_ids: [], test_files: [])
+      allow(Testalaria::Git).to receive(:new).and_return(double)
+      allow(Testalaria::Flow).to receive(:new).and_return(double(plan: plan))
+      out = StringIO.new
+
+      described_class.list(config_path: write_config, out: out)
+      expect(out.string.strip).to eq("ALL")
+    end
+  end
+
   # `lint` only reads files and scans them — no subprocess — so it runs for real
   # against a repo built in a tmpdir we chdir into.
   describe ".lint" do
