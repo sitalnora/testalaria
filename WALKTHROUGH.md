@@ -690,14 +690,20 @@ selection = build_selection(map, changed_sources, test_files)
 
 ```ruby
 def build_selection(map, changed_sources, test_files)
+	log("analyzing #{Map.example_keys(map).size} mapped example(s) + indexing stubs across test files...")
 	stub_index = build_stub_index
-	selector = Selector.new(map: map, full_run_triggers: @config.full_run_triggers, stub_index: stub_index)
+	const_index = build_const_index(changed_constants(changed_sources))
+	selector = Selector.new(
+		map: map, full_run_triggers: @config.full_run_triggers,
+		stub_index: stub_index, const_index: const_index
+	)
+	
 	selector.select(
 		changed_source: changed_sources,
 		changed_test: test_files,
 		changed_paths: changed_sources.map(&:path) + test_files
 	)
-end
+	end
 ```
 
 We first build the stub index:
@@ -716,54 +722,384 @@ Well, why do we need a stub index, we got a DefIndex, right? Wrong.
 
 Thing is, coverage does not see stubbed methods.. so if i stub a method that should be called, then it won't be tested despite being part of that method's flow. Therefore, we'll use this to backfill the stubbed methods in the files! Screw you nondeterminism.
 
-We then create the selector, and select the tests based on the:
-1. Changed Sources
-2. Changed Tests
-3. Changed Paths
-
-With the end result of the select being
+Let's see how this StubIndex is built, and what it does:
 
 ```ruby
-Result.new(
-	full_run: false, trigger: nil,
-	example_reasons: state[:example_reasons],
-	uncovered_files: state[:uncovered].uniq,
-	escalations: state[:escalations].uniq,
-	test_files: state[:test_files].uniq,
-	file_reasons: state[:file_reasons]
+def initialize(sources)
+	@symbols = Hash.new { |h, k| h[k] = [] } # method name => [test files]
+	@consts = Hash.new { |h, k| h[k] = [] } # class name => [test files]
+	sources.each do |file, source|
+		sexp = Ripper.sexp(source)
+		scan(sexp, file) if sexp
+	end
+	@symbols.each_value(&:uniq!)
+	@consts.each_value(&:uniq!)
+end
+```
+
+So, we create the `@symbols` and `@consts` ivars, after which for each source we create the sEXP tree, and then we can each file.
+
+```ruby
+def scan(node, file)
+	return unless node.is_a?(Array)
+	
+	name = call_name(node)
+	if SYMBOL_STUBBERS.include?(name)
+		sym = first_symbol(node)
+		@symbols[sym] << file if sym
+	elsif CONST_DOUBLERS.include?(name)
+		const = first_const(node)
+		@consts[const] << file if const
+	end
+	
+	node.each { |child| scan(child, file) }
+end
+
+def call_name(node)
+	case node[0]
+		when :command then ident_name(node[1])
+		when :command_call then ident_name(node[3])
+		when :fcall then ident_name(node[1])
+		when :call then ident_name(node[3])
+		when :method_add_arg, :method_add_block then call_name(node[1])
+	end
+end
+```
+
+So basically, we iterate through all the nodes. For each node, based on what kind of node it is, we get its name (to see the command/ method name). Based on that we add the touched file to a hashmap containing information about the stubbed method's name, and where it belongs.
+
+Like if we have
+
+```ruby
+class Something
+ def m1
+   # expensive computation
+ end
+end
+
+class ElseTest
+ test "something is stubbed"
+  allow_any_instance_of(Something).to_receive(:m1).and return(1337)
+ end
+end
+```
+
+We'll end up having
+```ruby
+{
+  m1 => else_test.rb
+}
+```
+
+And then we look at its other public method:
+
+```ruby
+def test_files_for(method_names)
+	files = []
+	method_names.each do |name|
+		next if name == DefIndex::TOPLEVEL
+		
+		klass, meth = name.split(/[#.]/, 2)
+		files.concat(@symbols[meth]) if meth && @symbols.key?(meth)
+		files.concat(@consts[klass]) if klass && !klass.empty? && @consts.key?(klass)
+	end
+	files.uniq
+end
+```
+
+Which based on the changed method names, it gives us back what test files should be run.
+Do note that we're running the FULL test files, not only the specific tests. This happens because the stubs very often happen in before-action hooks.
+
+Now, let's go back to `const_index = build_const_index(changed_constants(changed_sources))`
+
+```ruby
+def build_const_index(changed_consts)
+	return nil if changed_consts.empty?
+	
+	log("constant(s) changed (#{changed_consts.join(', ')}); indexing references")
+	sources = {}
+	Dir.glob("**/*.rb").each do |file|
+		next if @config.test_file?(file) || file.include?("/vendor/") || !File.exist?(file)
+		
+		src = File.read(file)
+		sources[file] = src if changed_consts.any? { |c| src.include?(c) }
+	end
+	ConstIndex.build(sources)
+end
+```
+
+```ruby
+def initialize(sources)
+	@refs = Hash.new { |h, k| h[k] = [] } # const name => [[file, method], ...]
+	sources.each { |file, source| index_file(file, source) }
+	@refs.each_value(&:uniq!)
+end
+```
+
+Same, we generate the `@refs` ivar and then we scan the sources for constants.
+
+```ruby
+def index_file(file, source)
+	sexp = Ripper.sexp(source)
+	return unless sexp
+	
+	walk(sexp, file, Resolver.new(DefIndex.build(source)))
+	rescue ParseError
+	# Unparseable source contributes no references (conservative).
+	nil
+end
+```
+
+Cool so, sEXP then we walk it and resolve the method names as above.
+
+```ruby
+def walk(node, file, resolver)
+	return unless node.is_a?(Array)
+	
+	case node[0]
+		when :var_field, :const_path_field, :top_const_field, :const_ref
+		return # assignment target / class-module definition — not a read
+		when :var_ref, :top_const_ref
+		record(node[1], file, resolver)
+		when :const_path_ref
+		# `A::B::C` — C is the referenced constant; A/B are reads in the scope.
+		record(node[2], file, resolver)
+		walk(node[1], file, resolver)
+		return
+	end
+	node.each { |child| walk(child, file, resolver) }
+end
+
+def record(const_node, file, resolver)
+	return unless const_node.is_a?(Array) && const_node[0] == :@const
+	
+	name = const_node[1]
+	line = const_node[2][0]
+	@refs[name] << [file, resolver.method_for(line)]
+end
+```
+
+So, as before, in the references, we will store something like
+
+```ruby
+{
+	NUMBER_OF_PLAYERS: [
+		["tournament.rb", "Tournament#compute_players"],
+		["rounds.rb", "Rounds#current_players"]
+	]
+}
+```
+
+Cool, now we're clear on what the stub and const indexes are used for. Let's go back to the flow:
+
+```ruby
+selector = Selector.new(
+	map: map, full_run_triggers: @config.full_run_triggers,
+	stub_index: stub_index, const_index: const_index
+)
+
+selector.select(
+	changed_source: changed_sources,
+	changed_test: test_files,
+	changed_paths: changed_sources.map(&:path) + test_files
 )
 ```
 
-
-Then we run the remainder
+The selector is really interesting, it's as important as the map itself, so let's run through all of it:
 
 ```ruby
+def initialize(map:, full_run_triggers: [], stub_index: nil, const_index: nil)
+	@map = map
+	@triggers = full_run_triggers
+	@stub_index = stub_index
+	@const_index = const_index
+	@by_method, @by_file = build_reverse_index(map)
+end
+```
+
+1. Define `map`, `triggers`, `stub_index` and `const_index` ivars.
+2. Now, we gotta create a hash containing a reverse -> if we change method x, what tests to run, if we change file-level y, what tests to run?
+
+```ruby
+def build_reverse_index(map)
+	by_method = Hash.new { |h, k| h[k] = [] }
+	by_file = Hash.new { |h, k| h[k] = [] }
+	Map.example_keys(map).each do |example|
+		(map[example] || {}).each do |file, methods|
+			by_file[file] << example
+			Array(methods).each { |m| by_method[[file, m]] << example }
+		end
+	end
+	[by_method, by_file]
+end
+```
+
+This is pretty self-explanatory, so let's move to the actual spicy part, the selection:
+
+```ruby
+def select(changed_source: [], changed_test: [], changed_paths: nil)
+	changed_paths ||= changed_source.map(&:path) + changed_test
+	
+	if (trigger = changed_paths.find { |p| trigger?(p) })
+		return Result.new(full_run: true, trigger: trigger, example_reasons: {}, uncovered_files: [], escalations: [], test_files: [], file_reasons: {})
+	end
+	
+	state = new_state
+	changed_test.each do |tf|
+		add_file_reason(state, tf, Reason.new(rule: "changed_test_file", file: tf))
+		state[:test_files] << tf
+	end
+	changed_source.each { |cs| process_source(cs, state) }
+	
+	finalize(state)
+end
+```
+
+The first lines are self-explanatory, so we move on to the new state:
+
+```ruby
+def new_state
+	{
+	example_reasons: Hash.new { |h, k| h[k] = [] },
+	file_reasons: Hash.new { |h, k| h[k] = [] },
+	uncovered: [],
+	escalations: [],
+	test_files: []
+	}
+end
+```
+
+The state explains:
+1. Why did we run example X for change X?
+2. Why did we run file Y for change Y?
+3. How many changes are uncovered?
+4. How many changes did we escalate from example to file?
+5. How many new test files are there?
+
+Now, the interesting part:
+
+```ruby
+changed_source.each { |cs| process_source(cs, state) }
+
+...
+
+def process_source(cs, state)
+	file = cs.path
+	file_examples = @by_file[file] || []
+	
+	changed_names =
+		if cs.head_index.nil?
+			handle_deleted_file(cs, file, file_examples, state)
+		else
+			handle_present_file(cs, file, file_examples, state)
+		end
+	
+	stub_files = @stub_index ? @stub_index.test_files_for(changed_names) : []
+	# A changed source file with no coverage and no stub: nothing can be
+	# selected for it — surface it as exposed rather than silently safe.
+	state[:uncovered] << file if file_examples.empty? && stub_files.empty?
+	
+	stub_files.each do |tf|
+		state[:test_files] << tf
+		add_file_reason(state, tf, Reason.new(rule: "stub_match", file: file))
+	end
+end
+```
+
+1. Find the path of the changed source.
+2. Based on that, see if there any-specific tests to run for ANY change in that file.
+3. We check if we changed the file name?
+
+Now, let's move on to the actual matching based on git. For that we need to understand that a `hunk` is a contiguous block of changed lines in a diff.
+
+```ruby
+def handle_present_file(cs, file, file_examples, state)
+	head = cs.head_index
+	resolver = Resolver.new(head)
+	hunks = Array(cs.hunks)
+	
+	# No hunk detail (e.g. mode/binary change we still see): widen to file.
+	if hunks.empty?
+		escalate(file, "file_change", file_examples, state)
+		return names(head)
+	end
+	...
+```
+
+	1. Resolve based on the head of the file.
+	2. Generate the hunks for that file.
+	3. If there are no hunks, there's a file change.
+
+```ruby
+...
+method_hits = []
+changed_consts = []
+toplevel = false
+hunks.flat_map(&:to_a).each do |line|
+	name = resolver.method_for(line)
+	if name != DefIndex::TOPLEVEL
+		method_hits << name
+	elsif @const_index && (consts = const_names_at(head, line)).any?
+		# Constant change with an index to resolve its readers -> targeted.
+		changed_consts.concat(consts)
+	else
+		# Genuine class-body change, or a constant with no index to resolve
+		# its readers -> fall back to the safe whole-file escalation.
+		toplevel = true
+	end
+end
+method_hits.uniq!
+changed_consts.uniq!
+```
+
+	4. We iterate through all the hunks, we get the line method, and then we try to resolve it - associate it to a method or to module/class level TOP level
+	5. We have an additional else for constants, because they are treated as a special case. If we change a constant, we only want to run the tests for methods that use that constant.
+	6. However, if we change a before_action hook or something, trying to understand where that fits in requires far more complex analysis, so instead we're going for a false-negative approach where we'd run the whole test file associated with the source, by using `toplevel`
+
+```ruby
+new_methods = method_hits.reject { |n| base_names.include?(n) }
+renamed = !deleted.empty? && !new_methods.empty?
+```
+
+We note the new methods, and we see if we renamed anything.
+
+```ruby
+escalate_toplevel(file, head, file_examples, state) if toplevel
+```
+
+As mentioned, if `toplevel` is true, we escalate it.
+
+```ruby
+select_const_refs(changed_consts, state)
+select_deleted(deleted, file, file_examples, renamed, state)
+```
+
+As mentioned above, we backfill the constant-changed-based tests.
+In addition, deletion is a specific case, because in case we delete a method or renamed it, we need to match that to the old tests, so that we can ensure that everything referencing that still works as intended.
+
+
+4.  Check if there are any stubs related to the changed source file projected in the tests.
+5. If the changed source file does not have any coverage and no stub, then it's added to uncovered, to mention furhter down in the state analysis.
+
+Okay, back to the flow.
+
+```ruby
+...
 if selection.full_run
+	log("full run triggered by #{selection.trigger}")
 	suites.concat(run_full)
 else
 	already = already_ran_examples(map, test_files)
 	remainder = selection.example_reasons.keys - already.to_a
+	extra_files = selection.test_files - test_files
+	log("selected #{selection.example_reasons.size} example(s); running #{remainder.size} example(s) + #{extra_files.size} test file(s)")
 	suites.concat(run_examples(remainder))
-	suites.concat(run_test_files(selection.test_files - test_files))
+	suites.concat(run_test_files(extra_files))
 end
 ```
 
-And finally we return the outcome, to be passed to the static analysis tool:
+If it's a full run, then we run everything.
 
-```ruby
-Outcome.new(
-	full_run: selection.full_run,
-	trigger: selection.trigger,
-	selection: selection,
-	suites: suites,
-	examples_run: (selection.example_reasons.keys + collected_example_keys(test_files)).uniq,
-	map_before: map_before,
-	map_after: @store.load,
-	changed_test_files: test_files,
-	changed_source_files: source_files,
-	changed_sources: changed_sources,
-	executed_lines: CoverageDigestStore.new(path: @coverage_path).load
-)
-```
+If not, we run only the remainder of the examples, and the extra files (triggered by toplevel).
 
-Then honestly the report is not really worth explaining, the above is where the magic lives.
+These runs also modify the map, so that's cool!

@@ -253,6 +253,9 @@ YAML.)
      `rename`, `file_change` (no hunk detail), `file_deleted`;
    - **stub back-fill** — tests that mock the changed method/class are added, since
      coverage can't see through stubs;
+   - **constant back-fill** — changing a top-level constant selects the tests whose
+     code *reads* it (`const_match`), via a source reference scan — coverage can't see
+     constant reads, so this closes that blind spot without a whole-file escalation;
    - **uncovered** — a changed source file with no map entry is surfaced as exposed.
 5. **Report** — every selection carries provenance (why it was chosen).
 
