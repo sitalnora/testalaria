@@ -133,12 +133,45 @@ module Testalaria
     def build_selection(map, changed_sources, test_files)
       log("analyzing #{Map.example_keys(map).size} mapped example(s) + indexing stubs across test files...")
       stub_index = build_stub_index
-      selector = Selector.new(map: map, full_run_triggers: @config.full_run_triggers, stub_index: stub_index)
+      const_index = build_const_index(changed_constants(changed_sources))
+      selector = Selector.new(
+        map: map, full_run_triggers: @config.full_run_triggers,
+        stub_index: stub_index, const_index: const_index
+      )
       selector.select(
         changed_source: changed_sources,
         changed_test: test_files,
         changed_paths: changed_sources.map(&:path) + test_files
       )
+    end
+
+    # Bare names of constants whose assignment lines were touched by the diff.
+    def changed_constants(changed_sources)
+      changed_sources.flat_map do |cs|
+        next [] unless cs.head_index
+
+        lines = Array(cs.hunks).flat_map(&:to_a)
+        cs.head_index.const_entries
+          .select { |e| lines.any? { |l| e.range.cover?(l) } }
+          .map(&:name)
+      end.uniq
+    end
+
+    # Build a const reference index only when a constant actually changed - and
+    # only over source files that textually mention one of the changed names, so
+    # we don't parse the whole tree on every run.
+    def build_const_index(changed_consts)
+      return nil if changed_consts.empty?
+
+      log("constant(s) changed (#{changed_consts.join(', ')}); indexing references")
+      sources = {}
+      Dir.glob("**/*.rb").each do |file|
+        next if @config.test_file?(file) || file.include?("/vendor/") || !File.exist?(file)
+
+        src = File.read(file)
+        sources[file] = src if changed_consts.any? { |c| src.include?(c) }
+      end
+      ConstIndex.build(sources)
     end
 
     def changed_source(base, path)

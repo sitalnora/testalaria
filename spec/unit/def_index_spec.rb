@@ -214,4 +214,42 @@ RSpec.describe Testalaria::DefIndex do
     expect(di.entries.map(&:name)).to eq(["Player#real"])
     expect(di.dynamic?).to be(true)
   end
+
+  describe "constant assignments (const_entries)" do
+    def const_names(src)
+      described_class.build(src).const_entries.map(&:name)
+    end
+
+    it "records a top-level constant assignment with its line range" do
+      src = <<~RUBY
+        module Player
+          PROMOTING_SCORE = 36
+          def fn; end
+        end
+      RUBY
+      di = described_class.build(src)
+      expect(di.const_entries.map(&:name)).to eq(["PROMOTING_SCORE"])
+      expect(di.const_entries.first.range).to eq(2..2)
+    end
+
+    it "records a namespaced constant assignment by its bare name" do
+      expect(const_names("Foo::BAR = 1\n")).to eq(["BAR"])
+    end
+
+    it "records an ||= constant assignment" do
+      expect(const_names("class C\n  X ||= 1\nend\n")).to eq(["X"])
+    end
+
+    it "records assignments, not reads, and not the class name" do
+      src = <<~RUBY
+        class C
+          LIMIT = 10
+          def fn
+            LIMIT + 1
+          end
+        end
+      RUBY
+      expect(const_names(src)).to eq(["LIMIT"])
+    end
+  end
 end

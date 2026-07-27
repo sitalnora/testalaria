@@ -20,7 +20,8 @@ module Testalaria
 
     # A single reason an example (or test file) was selected. Value-equal for
     # dedup. rule ∈ changed_test_file | method_match | file_escalation |
-    # stub_match | full_run_trigger; cause names the escalation trigger.
+    # stub_match | const_match | full_run_trigger; cause names the escalation
+    # trigger (or, for const_match, the changed constant).
     Reason = Struct.new(:rule, :file, :method, :hunk, :cause, keyword_init: true)
 
     Result = Struct.new(
@@ -29,10 +30,11 @@ module Testalaria
       keyword_init: true
     )
 
-    def initialize(map:, full_run_triggers: [], stub_index: nil)
+    def initialize(map:, full_run_triggers: [], stub_index: nil, const_index: nil)
       @map = map
       @triggers = full_run_triggers
       @stub_index = stub_index
+      @const_index = const_index
       @by_method, @by_file = build_reverse_index(map)
     end
 
@@ -124,26 +126,74 @@ module Testalaria
       base_names = cs.base_index ? names(cs.base_index) : []
       head_names = names(head)
       deleted = base_names - head_names
-      hit_names = hunks.flat_map { |r| r.map { |line| resolver.method_for(line) } }.uniq
-      new_methods = hit_names.reject { |n| n == DefIndex::TOPLEVEL || base_names.include?(n) }
+
+      # Classify each changed line: a method hit, a changed constant, or a
+      # genuine toplevel (class-body) change. Constant assignments are pulled
+      # out of the toplevel bucket so they trigger a reference lookup instead of
+      # a blunt whole-file escalation.
+      method_hits = []
+      changed_consts = []
+      toplevel = false
+      hunks.flat_map(&:to_a).each do |line|
+        name = resolver.method_for(line)
+        if name != DefIndex::TOPLEVEL
+          method_hits << name
+        elsif @const_index && (consts = const_names_at(head, line)).any?
+          # Constant change with an index to resolve its readers -> targeted.
+          changed_consts.concat(consts)
+        else
+          # Genuine class-body change, or a constant with no index to resolve
+          # its readers -> fall back to the safe whole-file escalation.
+          toplevel = true
+        end
+      end
+      method_hits.uniq!
+      changed_consts.uniq!
+
+      new_methods = method_hits.reject { |n| base_names.include?(n) }
       renamed = !deleted.empty? && !new_methods.empty?
 
-      hit_names.each { |name| resolve_hit(name, file, head, file_examples, renamed, state) }
+      method_hits.each { |name| resolve_hit(name, file, head, file_examples, renamed, state) }
+      escalate_toplevel(file, head, file_examples, state) if toplevel
+      select_const_refs(changed_consts, state)
       select_deleted(deleted, file, file_examples, renamed, state)
 
-      (hit_names - [DefIndex::TOPLEVEL]) + deleted
+      method_hits + deleted
     end
 
-    def resolve_hit(name, file, head, file_examples, renamed, state)
-      if name == DefIndex::TOPLEVEL
-        cause = head.dynamic? ? "dynamic_def" : "toplevel_change"
-        escalate(file, cause, file_examples, state)
-      elsif @by_method.key?([file, name])
+    def resolve_hit(name, file, _head, file_examples, renamed, state)
+      if @by_method.key?([file, name])
         reason = Reason.new(rule: "method_match", file: file, method: name)
         @by_method[[file, name]].each { |ex| state[:example_reasons][ex] << reason }
       else
         # A def with no recorded coverage: new (or renamed) method.
         escalate(file, renamed ? "rename" : "new_method", file_examples, state, method: name)
+      end
+    end
+
+    def escalate_toplevel(file, head, file_examples, state)
+      escalate(file, head.dynamic? ? "dynamic_def" : "toplevel_change", file_examples, state)
+    end
+
+    # Constant names whose assignment range covers this line.
+    def const_names_at(def_index, line)
+      def_index.const_entries.select { |e| e.range.cover?(line) }.map(&:name)
+    end
+
+    # A changed constant reaches its dependents only through reads coverage never
+    # recorded. Look each name up in the const reference index, resolve the
+    # reading site to a mapped example set, and select those.
+    def select_const_refs(const_names, state)
+      return if const_names.empty? || @const_index.nil?
+
+      const_names.each do |cname|
+        @const_index.sites_for([cname]).each do |ref_file, ref_method|
+          key = [ref_file, ref_method]
+          next unless @by_method.key?(key)
+
+          reason = Reason.new(rule: "const_match", file: ref_file, method: ref_method, cause: cname)
+          @by_method[key].each { |ex| state[:example_reasons][ex] << reason }
+        end
       end
     end
 

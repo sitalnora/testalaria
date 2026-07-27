@@ -109,4 +109,23 @@ RSpec.describe Testalaria::Flow do
       expect(cs.base_index).not_to be_nil
     end
   end
+
+  describe "#changed_constants" do
+    def source(path, body, hunks)
+      Testalaria::Selector::ChangedSource.new(
+        path: path, hunks: hunks,
+        head_index: Testalaria::DefIndex.build(body), base_index: nil
+      )
+    end
+
+    it "extracts constants whose assignment lines are in the diff" do
+      cs = source("app/x.rb", "class X\n  LIMIT = 1\n  def go; end\nend\n", [2..2])
+      expect(flow.send(:changed_constants, [cs])).to eq(["LIMIT"])
+    end
+
+    it "ignores constants whose assignment lines are not in the diff" do
+      cs = source("app/x.rb", "class X\n  LIMIT = 1\n  def go\n    1\n  end\nend\n", [3..3])
+      expect(flow.send(:changed_constants, [cs])).to eq([])
+    end
+  end
 end

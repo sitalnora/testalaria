@@ -30,6 +30,12 @@ module Testalaria
     # Sorted [Entry, ...] by range start then name. Non-overlapping.
     attr_reader :entries
 
+    # Sorted [Entry, ...] for top-level (class/module-body) constant
+    # assignments: `PROMOTING_SCORE = 36` => Entry("PROMOTING_SCORE", 8..8).
+    # Bare name (matches both `X` and `Ns::X` references). Coverage can't see
+    # constant reads, so selection uses these to trigger a reference lookup.
+    attr_reader :const_entries
+
     # @param source [String] Ruby source
     # @raise [ParseError] on unparseable source (selection escalates the file)
     def self.build(source)
@@ -38,12 +44,14 @@ module Testalaria
 
     def initialize(source)
       @entries = []
+      @const_entries = []
       @dynamic = false
       sexp = Ripper.sexp(source)
       raise ParseError, "source did not parse" if sexp.nil?
 
       walk(sexp, [], singleton: false)
       @entries.sort_by! { |e| [e.range.begin, e.name] }
+      @const_entries.sort_by! { |e| [e.range.begin, e.name] }
     end
 
     def dynamic?
@@ -73,8 +81,34 @@ module Testalaria
         record_def(node[3], node, stack, singleton: true)
       else
         flag_dynamic(node)
+        record_const(node)
         node.each { |child| walk(child, stack, singleton: singleton) }
       end
+    end
+
+    # Record a constant assignment (`X = ...`, `Ns::X = ...`, `X ||= ...`).
+    # Only reached for class/module-body assignments — :def doesn't recurse, so
+    # method-body constants (dynamic, rare) are intentionally skipped.
+    def record_const(node)
+      return unless %i[assign opassign].include?(node[0])
+
+      info = const_target(node[1])
+      return unless info
+
+      name, line = info
+      @const_entries << Entry.new(name, line..max_line(node))
+    end
+
+    # [name, line] if the assignment target is a constant, else nil.
+    def const_target(node)
+      return nil unless node.is_a?(Array)
+
+      const =
+        case node[0]
+        when :var_field, :top_const_field then node[1]
+        when :const_path_field then node[2]
+        end
+      [const[1], const[2][0]] if const.is_a?(Array) && const[0] == :@const
     end
 
     def record_def(ident, node, stack, singleton:)

@@ -43,6 +43,7 @@ require "testalaria/session"
 # Phase 2 — git + selection.
 require "testalaria/git"
 require "testalaria/stub_index"
+require "testalaria/const_index"
 require "testalaria/selector"
 
 # Phase 3 — orchestration.

@@ -77,8 +77,11 @@ RSpec.describe Testalaria::Selector do
   end
 
   # map_data is a keyword so a symbol-keyed map hash isn't mistaken for kwargs.
-  def selector(map_data: map, triggers: [], stub_index: nil)
-    described_class.new(map: map_data, full_run_triggers: triggers, stub_index: stub_index)
+  def selector(map_data: map, triggers: [], stub_index: nil, const_index: nil)
+    described_class.new(
+      map: map_data, full_run_triggers: triggers,
+      stub_index: stub_index, const_index: const_index
+    )
   end
 
   # Build a ChangedSource; head/base may be nil (deleted / added file).
@@ -644,6 +647,62 @@ RSpec.describe Testalaria::Selector do
       # lines 1 and 4 both resolve to TOPLEVEL -> one toplevel_change escalation.
       r = selector.select(changed_source: [changed(path, player_src, hunks: [1..1, 4..4])])
       expect(r.escalations.count { |e| e.cause == "toplevel_change" }).to eq(1)
+    end
+  end
+
+  # --- changed constants (reference back-fill) ----------------------------
+
+  describe "a changed constant" do
+    # LIMIT (line 2) is read by fn_one (line 4); fn_two never reads it.
+    let(:const_src) do
+      <<~RUBY
+        class Player
+          LIMIT = 10
+          def fn_one
+            LIMIT
+          end
+          def fn_two
+            2
+          end
+        end
+      RUBY
+    end
+
+    let(:const_index) { Testalaria::ConstIndex.build(path => const_src) }
+
+    def change_const(hunks)
+      selector(const_index: const_index)
+        .select(changed_source: [changed(path, const_src, const_src, hunks: hunks)])
+    end
+
+    it "selects only the tests that read the constant (const_match)" do
+      # LIMIT is read by fn_one -> e1, e3; fn_two's e2 is not selected.
+      r = change_const([2..2])
+      expect(r.example_reasons.keys).to contain_exactly("e1", "e3")
+      expect(r.example_reasons["e1"].map(&:rule)).to include("const_match")
+    end
+
+    it "does not escalate toplevel_change for a pure constant change" do
+      r = change_const([2..2])
+      expect(causes(r)).not_to include("toplevel_change")
+    end
+
+    it "records the constant name and reading method on the reason" do
+      r = change_const([2..2])
+      reason = r.example_reasons["e1"].find { |x| x.rule == "const_match" }
+      expect(reason.cause).to eq("LIMIT")
+      expect(reason.method).to eq("Player#fn_one")
+    end
+
+    it "still escalates toplevel_change for a non-constant class-body change" do
+      # line 1 (`class Player`) is toplevel but not a constant assignment.
+      r = change_const([1..1])
+      expect(causes(r)).to include("toplevel_change")
+    end
+
+    it "falls back to a toplevel escalation when no const index is available" do
+      r = selector.select(changed_source: [changed(path, const_src, const_src, hunks: [2..2])])
+      expect(causes(r)).to include("toplevel_change")
     end
   end
 
